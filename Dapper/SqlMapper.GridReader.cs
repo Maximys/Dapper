@@ -147,7 +147,7 @@ namespace Dapper
             {
                 if (reader == null) throw new ObjectDisposedException(GetType().FullName, "The reader has been disposed; this can happen after all data has been consumed");
                 if (IsConsumed) throw new InvalidOperationException("Query results must be consumed in the correct order, and each result can only be consumed once");
-                var typedIdentity = identity.ForGrid(type, gridIndex);
+                var typedIdentity = identity.ForGrid(type, typeof(IEnumerable <T>), gridIndex);
                 CacheInfo cache = GetCacheInfo(typedIdentity, null, addToCache);
                 var deserializer = cache.Deserializer;
 
@@ -171,7 +171,7 @@ namespace Dapper
                 T result = default(T);
                 if (reader.Read() && reader.FieldCount != 0)
                 {
-                    var typedIdentity = identity.ForGrid(type, gridIndex);
+                    var typedIdentity = identity.ForGrid(type, typeof(T), gridIndex);
                     CacheInfo cache = GetCacheInfo(typedIdentity, null, addToCache);
                     var deserializer = cache.Deserializer;
 
@@ -204,7 +204,7 @@ namespace Dapper
 
             private IEnumerable<TReturn> MultiReadInternal<TFirst, TSecond, TThird, TFourth, TFifth, TSixth, TSeventh, TReturn>(Delegate func, string splitOn)
             {
-                var identity = this.identity.ForGrid(typeof(TReturn), new Type[] {
+                var identity = this.identity.ForGrid(typeof(TReturn), typeof(TReturn), new Type[] {
                     typeof(TFirst),
                     typeof(TSecond),
                     typeof(TThird),
@@ -231,7 +231,7 @@ namespace Dapper
 
             private IEnumerable<TReturn> MultiReadInternal<TReturn>(Type[] types, Func<object[], TReturn> map, string splitOn)
             {
-                var identity = this.identity.ForGrid(typeof(TReturn), types, gridIndex);
+                var identity = this.identity.ForGrid(typeof(TReturn), typeof(TReturn), types, gridIndex);
                 try
                 {
                     foreach (var r in MultiMapImpl<TReturn>(null, default(CommandDefinition), types, map, splitOn, reader, identity, false))

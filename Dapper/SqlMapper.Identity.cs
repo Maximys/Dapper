@@ -1,5 +1,9 @@
 ﻿using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Data;
+using System.Linq;
+using System.Reflection;
 
 namespace Dapper
 {
@@ -10,11 +14,11 @@ namespace Dapper
         /// </summary>
         public class Identity : IEquatable<Identity>
         {
-            internal Identity ForGrid(Type primaryType, int gridIndex) =>
-                new Identity(sql, commandType, connectionString, primaryType, parametersType, null, gridIndex);
+            internal Identity ForGrid(Type primaryType, Type resultType, int gridIndex) =>
+                new Identity(sql, commandType, connectionString, primaryType, parametersType, resultType, null, gridIndex);
 
-            internal Identity ForGrid(Type primaryType, Type[] otherTypes, int gridIndex) =>
-                new Identity(sql, commandType, connectionString, primaryType, parametersType, otherTypes, gridIndex);
+            internal Identity ForGrid(Type primaryType, Type resultType, Type[] otherTypes, int gridIndex) =>
+                new Identity(sql, commandType, connectionString, primaryType, parametersType, resultType, otherTypes, gridIndex);
 
             /// <summary>
             /// Create an identity for use with DynamicParameters, internal use only.
@@ -22,12 +26,12 @@ namespace Dapper
             /// <param name="type">The parameters type to create an <see cref="Identity"/> for.</param>
             /// <returns></returns>
             public Identity ForDynamicParameters(Type type) =>
-                new Identity(sql, commandType, connectionString, this.type, type, null, -1);
+                new Identity(sql, commandType, connectionString, this.type, type, resultType, null, -1);
 
-            internal Identity(string sql, CommandType? commandType, IDbConnection connection, Type type, Type parametersType, Type[] otherTypes)
-                : this(sql, commandType, connection.ConnectionString, type, parametersType, otherTypes, 0) { /* base call */ }
+            internal Identity(string sql, CommandType? commandType, IDbConnection connection, Type type, Type parametersType, Type resultType, Type[] otherTypes)
+                : this(sql, commandType, connection.ConnectionString, type, parametersType, resultType, otherTypes, 0) { /* base call */ }
 
-            private Identity(string sql, CommandType? commandType, string connectionString, Type type, Type parametersType, Type[] otherTypes, int gridIndex)
+            private Identity(string sql, CommandType? commandType, string connectionString, Type type, Type parametersType, Type resultType, Type[] otherTypes, int gridIndex)
             {
                 this.sql = sql;
                 this.commandType = commandType;
@@ -35,6 +39,8 @@ namespace Dapper
                 this.type = type;
                 this.parametersType = parametersType;
                 this.gridIndex = gridIndex;
+                this.resultType = resultType;
+                linkedResultTypes = PrepareLinkedTypes(resultType);
                 unchecked
                 {
                     hashCode = 17; // we *know* we are using this in a dictionary, so pre-compute this
@@ -96,6 +102,15 @@ namespace Dapper
             public readonly Type parametersType;
 
             /// <summary>
+            /// Type of query row result.
+            /// </summary>
+            protected readonly Type resultType;
+            /// <summary>
+            /// Types linked with query.
+            /// </summary>
+            public readonly Type[] linkedResultTypes;
+
+            /// <summary>
             /// Gets the hash code for this identity.
             /// </summary>
             /// <returns></returns>
@@ -115,6 +130,70 @@ namespace Dapper
                     && commandType == other.commandType
                     && connectionStringComparer.Equals(connectionString, other.connectionString)
                     && parametersType == other.parametersType;
+            }
+
+            /// <summary>
+            /// Analyze type with inner types.
+            /// </summary>
+            /// <param name="typeForAnalyze">Type for analyze.</param>
+            /// <returns>Linked types.</returns>
+            protected Type[] PrepareLinkedTypes(Type typeForAnalyze)
+            {
+                var analyzedTypes = new List<Type>();
+                IList<Type> linkedTypesWithoutRoot;
+                Type[] returnValue;
+
+                analyzedTypes.Add(typeForAnalyze);
+                linkedTypesWithoutRoot = PrepareLinkedTypes(typeForAnalyze, analyzedTypes);
+                linkedTypesWithoutRoot.Add(typeForAnalyze);
+                returnValue = linkedTypesWithoutRoot.ToArray();
+
+                return returnValue;
+            }
+
+            /// <summary>
+            /// Analyze type with inner types.
+            /// </summary>
+            /// <param name="typeForAnalyze">Type for analyze.</param>
+            /// <param name="analyzedTypes">Types, which already analyzed.</param>
+            /// <returns>Linked types.</returns>
+            protected IList<Type> PrepareLinkedTypes(Type typeForAnalyze, List<Type> analyzedTypes)
+            {
+                BindingFlags requiredFieldsAndPropertiesFlags = BindingFlags.Public |
+                             BindingFlags.Instance;
+                Type typeForDirectProcessing;
+                IList<Type> typesOfFieldsAndProperties;
+                IList<Type> returnValue;
+
+                if(typeForAnalyze is IEnumerable)
+                {
+                    typeForDirectProcessing = typeForAnalyze.GetGenericArguments().SingleOrDefault() ?? typeForAnalyze;
+                }
+                else
+                {
+                    typeForDirectProcessing = typeForAnalyze;
+                }
+                typesOfFieldsAndProperties = typeForAnalyze
+                    .GetFields(requiredFieldsAndPropertiesFlags)
+                    .Select(curField => curField.FieldType)
+                    .Where(curFieldType => !analyzedTypes.Any(curType => curType == curFieldType))
+                    .ToList();
+                typesOfFieldsAndProperties = typesOfFieldsAndProperties
+                    .Union(typeForAnalyze
+                    .GetProperties(requiredFieldsAndPropertiesFlags)
+                    .Select(curProperty => curProperty.PropertyType)
+                    .Where(curPropertyType => (!analyzedTypes.Any(curType => curType == curPropertyType))
+                    && (!typesOfFieldsAndProperties.Any(curFieldsAndPropType => curFieldsAndPropType == curPropertyType))))
+                    .ToList();
+
+                analyzedTypes.AddRange(typesOfFieldsAndProperties);
+
+                typesOfFieldsAndProperties = typesOfFieldsAndProperties
+                    .Union(typesOfFieldsAndProperties.SelectMany(curItem => PrepareLinkedTypes(curItem, analyzedTypes)))
+                    .ToList();
+
+                returnValue = typesOfFieldsAndProperties;
+                return returnValue;
             }
         }
     }

@@ -160,7 +160,7 @@ namespace Dapper
             {
                 if (reader == null) throw new ObjectDisposedException(GetType().FullName, "The reader has been disposed; this can happen after all data has been consumed");
                 if (IsConsumed) throw new InvalidOperationException("Query results must be consumed in the correct order, and each result can only be consumed once");
-                var typedIdentity = identity.ForGrid(type, gridIndex);
+                var typedIdentity = identity.ForGrid(type, typeof(IEnumerable<T>), gridIndex);
                 CacheInfo cache = GetCacheInfo(typedIdentity, null, addToCache);
                 var deserializer = cache.Deserializer;
 
@@ -200,7 +200,7 @@ namespace Dapper
                 T result = default(T);
                 if (await reader.ReadAsync(cancel).ConfigureAwait(false) && reader.FieldCount != 0)
                 {
-                    var typedIdentity = identity.ForGrid(type, gridIndex);
+                    var typedIdentity = identity.ForGrid(type, typeof(T), gridIndex);
                     CacheInfo cache = GetCacheInfo(typedIdentity, null, addToCache);
                     var deserializer = cache.Deserializer;
 

@@ -60,11 +60,18 @@ namespace Dapper
         }
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<Identity, CacheInfo> _queryCache = new System.Collections.Concurrent.ConcurrentDictionary<Identity, CacheInfo>();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, IList<Identity>> _typeCache = new System.Collections.Concurrent.ConcurrentDictionary<Type, IList<Identity>>();
         private static void SetQueryCache(Identity key, CacheInfo value)
         {
             if (Interlocked.Increment(ref collect) == COLLECT_PER_ITEMS)
             {
                 CollectCacheGarbage();
+            }
+            foreach (Type curLinkedType in key.linkedResultTypes.Where(linkedTypes => 
+            !_typeCache.Any(curType => (curType.Key == linkedTypes) && (curType.Value.Any(curIdentity => curIdentity == key)))))
+            {
+                Type closureRemover = curLinkedType;
+                _typeCache.AddOrUpdate(closureRemover, new List<Identity>() { key }, (internalKey, internalValue) => { internalValue.Add(key); return internalValue; });
             }
             _queryCache[key] = value;
         }
@@ -77,6 +84,10 @@ namespace Dapper
                 {
                     if (pair.Value.GetHitCount() <= COLLECT_HIT_COUNT_MIN)
                     {
+                        foreach (var typeCachePair in _typeCache.Where(curType => curType.Value.Any(curTypeIdentity => pair.Key == curTypeIdentity)))
+                        {
+                            _typeCache[typeCachePair.Key].Remove(pair.Key);
+                        }
                         _queryCache.TryRemove(pair.Key, out CacheInfo cache);
                     }
                 }
@@ -281,6 +292,22 @@ namespace Dapper
 
         internal static bool HasTypeHandler(Type type) => typeHandlers.ContainsKey(type);
 
+        internal static void RemoveTypeHandler(Type type)
+        {
+            IList<Identity> identitiesForRemove;
+
+            if (_typeCache.TryGetValue(type, out identitiesForRemove))
+            {
+                foreach (var curIdentity in identitiesForRemove)
+                {
+                    if(!_queryCache.TryRemove(curIdentity, out _))
+                    {
+                        throw new InvalidOperationException(string.Format("Removing cache info for \"{0}\" query is impossible", curIdentity.sql));
+                    }
+                }
+            }
+        }
+
         /// <summary>
         /// Configure the specified type to be processed by a custom handler.
         /// </summary>
@@ -289,7 +316,12 @@ namespace Dapper
         /// <param name="clone">Whether to clone the current type handler map.</param>
         public static void AddTypeHandlerImpl(Type type, ITypeHandler handler, bool clone)
         {
-            if (type == null) throw new ArgumentNullException(nameof(type));
+            if (type == null)
+            {
+                throw new ArgumentNullException(nameof(type));
+            }
+
+            RemoveTypeHandler(type);
 
             Type secondary = null;
             if (type.IsValueType())
@@ -540,7 +572,7 @@ namespace Dapper
                             {
                                 masterSql = cmd.CommandText;
                                 isFirst = false;
-                                identity = new Identity(command.CommandText, cmd.CommandType, cnn, null, obj.GetType(), null);
+                                identity = new Identity(command.CommandText, cmd.CommandType, cnn, null, obj.GetType(), typeof(void), null);
                                 info = GetCacheInfo(identity, obj, command.AddToCache);
                             }
                             else
@@ -564,7 +596,7 @@ namespace Dapper
             // nice and simple
             if (param != null)
             {
-                identity = new Identity(command.CommandText, command.CommandType, cnn, null, param.GetType(), null);
+                identity = new Identity(command.CommandText, command.CommandType, cnn, null, param.GetType(), typeof(void), null);
                 info = GetCacheInfo(identity, param, command.AddToCache);
             }
             return ExecuteCommand(cnn, ref command, param == null ? null : info.ParamReader);
@@ -1009,7 +1041,7 @@ namespace Dapper
         private static GridReader QueryMultipleImpl(this IDbConnection cnn, ref CommandDefinition command)
         {
             object param = command.Parameters;
-            var identity = new Identity(command.CommandText, command.CommandType, cnn, typeof(GridReader), param?.GetType(), null);
+            var identity = new Identity(command.CommandText, command.CommandType, cnn, typeof(GridReader), param?.GetType(), typeof(void), null);
             CacheInfo info = GetCacheInfo(identity, param, command.AddToCache);
 
             IDbCommand cmd = null;
@@ -1066,7 +1098,7 @@ namespace Dapper
         private static IEnumerable<T> QueryImpl<T>(this IDbConnection cnn, CommandDefinition command, Type effectiveType)
         {
             object param = command.Parameters;
-            var identity = new Identity(command.CommandText, command.CommandType, cnn, effectiveType, param?.GetType(), null);
+            var identity = new Identity(command.CommandText, command.CommandType, cnn, effectiveType, param?.GetType(), typeof(T), null);
             var info = GetCacheInfo(identity, param, command.AddToCache);
 
             IDbCommand cmd = null;
@@ -1093,8 +1125,14 @@ namespace Dapper
                     if (command.AddToCache) SetQueryCache(identity, info);
                 }
 
+
+                var tmp = new DeserializerState(hash, GetDeserializer(effectiveType, reader, 0, -1, false));
+                System.Diagnostics.Debug.WriteLine(tmp.Func);
+
+
                 var func = tuple.Func;
                 var convertToType = Nullable.GetUnderlyingType(effectiveType) ?? effectiveType;
+
                 while (reader.Read())
                 {
                     object val = func(reader);
@@ -1164,7 +1202,7 @@ namespace Dapper
         private static T QueryRowImpl<T>(IDbConnection cnn, Row row, ref CommandDefinition command, Type effectiveType)
         {
             object param = command.Parameters;
-            var identity = new Identity(command.CommandText, command.CommandType, cnn, effectiveType, param?.GetType(), null);
+            var identity = new Identity(command.CommandText, command.CommandType, cnn, effectiveType, param?.GetType(), typeof(T), null);
             var info = GetCacheInfo(identity, param, command.AddToCache);
 
             IDbCommand cmd = null;
@@ -1407,7 +1445,7 @@ namespace Dapper
         private static IEnumerable<TReturn> MultiMapImpl<TFirst, TSecond, TThird, TFourth, TFifth, TSixth, TSeventh, TReturn>(this IDbConnection cnn, CommandDefinition command, Delegate map, string splitOn, IDataReader reader, Identity identity, bool finalize)
         {
             object param = command.Parameters;
-            identity = identity ?? new Identity(command.CommandText, command.CommandType, cnn, typeof(TFirst), param?.GetType(), new[] { typeof(TFirst), typeof(TSecond), typeof(TThird), typeof(TFourth), typeof(TFifth), typeof(TSixth), typeof(TSeventh) });
+            identity = identity ?? new Identity(command.CommandText, command.CommandType, cnn, typeof(TFirst), param?.GetType(), typeof(TReturn), new[] { typeof(TFirst), typeof(TSecond), typeof(TThird), typeof(TFourth), typeof(TFifth), typeof(TSixth), typeof(TSeventh) });
             CacheInfo cinfo = GetCacheInfo(identity, param, command.AddToCache);
 
             IDbCommand ownedCommand = null;
@@ -1477,7 +1515,7 @@ namespace Dapper
             }
 
             object param = command.Parameters;
-            identity = identity ?? new Identity(command.CommandText, command.CommandType, cnn, types[0], param?.GetType(), types);
+            identity = identity ?? new Identity(command.CommandText, command.CommandType, cnn, types[0], param?.GetType(), typeof(TReturn), types);
             CacheInfo cinfo = GetCacheInfo(identity, param, command.AddToCache);
 
             IDbCommand ownedCommand = null;
@@ -2841,7 +2879,7 @@ namespace Dapper
             object param = command.Parameters;
             if (param != null)
             {
-                var identity = new Identity(command.CommandText, command.CommandType, cnn, null, param.GetType(), null);
+                var identity = new Identity(command.CommandText, command.CommandType, cnn, null, param.GetType(), typeof(T), null);
                 paramReader = GetCacheInfo(identity, command.Parameters, command.AddToCache).ParamReader;
             }
 
@@ -2898,7 +2936,7 @@ namespace Dapper
             // nice and simple
             if (param != null)
             {
-                var identity = new Identity(command.CommandText, command.CommandType, cnn, null, param.GetType(), null);
+                var identity = new Identity(command.CommandText, command.CommandType, cnn, null, param.GetType(), typeof(void), null);
                 info = GetCacheInfo(identity, param, command.AddToCache);
             }
             var paramReader = info?.ParamReader;

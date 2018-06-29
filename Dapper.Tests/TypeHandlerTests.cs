@@ -499,9 +499,30 @@ namespace Dapper.Tests
         public void Test_RemoveTypeMap()
         {
             SqlMapper.ResetTypeHandlers();
-            SqlMapper.RemoveTypeMap(typeof(DateTime));
+            //SqlMapper.RemoveTypeMap(typeof(DateTime));
 
             var dateTimeHandler = new RecordingTypeHandler<DateTime>();
+            //SqlMapper.AddTypeHandler(dateTimeHandler);
+
+            connection.Execute("CREATE TABLE #Test_RemoveTypeMap (x datetime NOT NULL);");
+
+            try
+            {
+                connection.Execute("INSERT INTO #Test_RemoveTypeMap VALUES (@Now)", new { DateTime.Now });
+                connection.Query<DateTime>("SELECT * FROM #Test_RemoveTypeMap");
+
+                /*Assert.True(dateTimeHandler.ParseWasCalled);
+                Assert.True(dateTimeHandler.SetValueWasCalled);*/
+            }
+            finally
+            {
+                connection.Execute("DROP TABLE #Test_RemoveTypeMap");
+                SqlMapper.AddTypeMap(typeof(DateTime), DbType.DateTime); // or an option to reset type map?
+            }
+
+            SqlMapper.ResetTypeHandlers();
+            SqlMapper.RemoveTypeMap(typeof(DateTime));
+
             SqlMapper.AddTypeHandler(dateTimeHandler);
 
             connection.Execute("CREATE TABLE #Test_RemoveTypeMap (x datetime NOT NULL);");
